@@ -22,6 +22,19 @@
             camera: { x: 0, y: 0 }
         };
         
+        // Keyboard state tracking
+        const keysPressed = {};
+        const keyMapping = {
+            'KeyW': 'up',
+            'ArrowUp': 'up',
+            'KeyA': 'left', 
+            'ArrowLeft': 'left',
+            'KeyS': 'down',
+            'ArrowDown': 'down',
+            'KeyD': 'right',
+            'ArrowRight': 'right'
+        };
+        
         // WebSocket connection
         function connectToServer() {
             ws = new WebSocket('wss://codepath-mmorg.onrender.com');
@@ -98,6 +111,30 @@
                     drawWorld();
                     break;
             }
+        }
+        
+        // Send move command to server
+        function sendMoveCommand(direction) {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                const moveMessage = {
+                    action: "move",
+                    direction: direction
+                };
+                ws.send(JSON.stringify(moveMessage));
+            }
+        }
+        
+        // Game loop for continuous movement
+        function gameLoop() {
+            // Check for pressed movement keys and send commands
+            for (const key in keysPressed) {
+                if (keysPressed[key] && keyMapping[key]) {
+                    sendMoveCommand(keyMapping[key]);
+                }
+            }
+            
+            // Continue the game loop
+            requestAnimationFrame(gameLoop);
         }
         
         // Load avatar images from base64 data
@@ -239,6 +276,30 @@
             drawAvatars();
         }
         
+        // Keyboard event handlers
+        function setupKeyboardControls() {
+            document.addEventListener('keydown', function(event) {
+                if (keyMapping[event.code]) {
+                    keysPressed[event.code] = true;
+                    event.preventDefault(); // Prevent page scrolling
+                }
+            });
+            
+            document.addEventListener('keyup', function(event) {
+                if (keyMapping[event.code]) {
+                    keysPressed[event.code] = false;
+                }
+            });
+            
+            // Handle window focus/blur to prevent stuck keys
+            window.addEventListener('blur', function() {
+                // Clear all pressed keys when window loses focus
+                for (const key in keysPressed) {
+                    keysPressed[key] = false;
+                }
+            });
+        }
+        
         // Initialize the game
         function init() {
             // Load the world image
@@ -250,6 +311,12 @@
             // Set up canvas resize handler
             window.addEventListener('resize', resizeCanvas);
             resizeCanvas();
+            
+            // Set up keyboard controls
+            setupKeyboardControls();
+            
+            // Start the game loop
+            gameLoop();
             
             // Connect to game server
             connectToServer();
