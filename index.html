@@ -14,21 +14,229 @@
         const canvas = document.getElementById('gameCanvas');
         const ctx = canvas.getContext('2d');
         let worldImage = new Image();
+        let ws = null;
+        let gameData = {
+            playerId: null,
+            players: {},
+            avatars: {},
+            camera: { x: 0, y: 0 }
+        };
+        
+        // WebSocket connection
+        function connectToServer() {
+            ws = new WebSocket('wss://codepath-mmorg.onrender.com');
+            
+            ws.onopen = function() {
+                // console.log('Connected to game server');
+                joinGame();
+            };
+            
+            ws.onmessage = function(event) {
+                const message = JSON.parse(event.data);
+                handleServerMessage(message);
+            };
+            
+            ws.onclose = function() {
+                // console.log('Disconnected from game server');
+                // Attempt reconnection after 3 seconds
+                setTimeout(connectToServer, 3000);
+            };
+            
+            ws.onerror = function(error) {
+                console.error('WebSocket error:', error);
+            };
+        }
+        
+        // Join the game
+        function joinGame() {
+            const joinMessage = {
+                action: "join_game",
+                username: "Matthew"
+            };
+            ws.send(JSON.stringify(joinMessage));
+        }
+        
+        // Handle messages from server
+        function handleServerMessage(message) {
+            // console.log('Received message:', message);
+            
+            switch(message.action) {
+                case 'join_game':
+                    if (message.success) {
+                        gameData.playerId = message.playerId;
+                        gameData.players = message.players;
+                        gameData.avatars = message.avatars;
+                        loadAvatarImages();
+                        updateCamera();
+                    } else {
+                        console.error('Failed to join game:', message.error);
+                    }
+                    break;
+                    
+                case 'players_moved':
+                    // Update player positions
+                    for (const playerId in message.players) {
+                        if (gameData.players[playerId]) {
+                            Object.assign(gameData.players[playerId], message.players[playerId]);
+                        }
+                    }
+                    updateCamera();
+                    drawWorld();
+                    break;
+                    
+                case 'player_joined':
+                    gameData.players[message.player.id] = message.player;
+                    if (message.avatar) {
+                        gameData.avatars[message.avatar.name] = message.avatar;
+                        loadAvatarImages();
+                    }
+                    drawWorld();
+                    break;
+                    
+                case 'player_left':
+                    delete gameData.players[message.playerId];
+                    drawWorld();
+                    break;
+            }
+        }
+        
+        // Load avatar images from base64 data
+        function loadAvatarImages() {
+            for (const avatarName in gameData.avatars) {
+                const avatar = gameData.avatars[avatarName];
+                avatar.imageObjects = {};
+                
+                // Load images for each direction
+                for (const direction in avatar.frames) {
+                    avatar.imageObjects[direction] = [];
+                    
+                    avatar.frames[direction].forEach((base64Data, frameIndex) => {
+                        const img = new Image();
+                        img.onload = function() {
+                            // console.log(`Loaded avatar ${avatarName} ${direction} frame ${frameIndex}`);
+                            drawWorld();
+                        };
+                        img.src = base64Data;
+                        avatar.imageObjects[direction].push(img);
+                    });
+                }
+            }
+        }
+        
+        // Update camera position based on player location
+        function updateCamera() {
+            if (!gameData.playerId || !gameData.players[gameData.playerId]) {
+                return;
+            }
+            
+            const player = gameData.players[gameData.playerId];
+            const worldSize = 2048;
+            
+            // Center camera on player, but don't go past world boundaries
+            gameData.camera.x = Math.max(0, Math.min(
+                worldSize - canvas.width,
+                player.x - canvas.width / 2
+            ));
+            gameData.camera.y = Math.max(0, Math.min(
+                worldSize - canvas.height,
+                player.y - canvas.height / 2
+            ));
+        }
         
         // Set canvas size to fill window
         function resizeCanvas() {
             canvas.width = window.innerWidth;
             canvas.height = window.innerHeight;
+            updateCamera();
             drawWorld();
+        }
+        
+        // Draw a single avatar
+        function drawAvatar(player) {
+            const avatar = gameData.avatars[player.avatar];
+            if (!avatar || !avatar.imageObjects) {
+                return;
+            }
+            
+            // Get the correct direction and frame
+            let direction = player.facing;
+            if (direction === 'west') {
+                // Use east frames but flip horizontally
+                direction = 'east';
+            }
+            
+            const frames = avatar.imageObjects[direction];
+            if (!frames || frames.length === 0) {
+                return;
+            }
+            
+            const frameIndex = Math.min(player.animationFrame || 0, frames.length - 1);
+            const img = frames[frameIndex];
+            
+            if (!img || !img.complete) {
+                return;
+            }
+            
+            // Calculate screen position
+            const screenX = player.x - gameData.camera.x;
+            const screenY = player.y - gameData.camera.y;
+            
+            // Save context for potential flipping
+            ctx.save();
+            
+            // Handle west direction flipping
+            if (player.facing === 'west') {
+                ctx.scale(-1, 1);
+                ctx.drawImage(img, -(screenX + img.width), screenY);
+            } else {
+                ctx.drawImage(img, screenX, screenY);
+            }
+            
+            ctx.restore();
+            
+            // Draw username label above avatar
+            ctx.save();
+            ctx.fillStyle = 'white';
+            ctx.strokeStyle = 'black';
+            ctx.lineWidth = 2;
+            ctx.font = '14px Arial';
+            ctx.textAlign = 'center';
+            
+            const labelX = screenX + img.width / 2;
+            const labelY = screenY - 5;
+            
+            // Draw text outline
+            ctx.strokeText(player.username, labelX, labelY);
+            // Draw text fill
+            ctx.fillText(player.username, labelX, labelY);
+            
+            ctx.restore();
+        }
+        
+        // Draw all avatars
+        function drawAvatars() {
+            for (const playerId in gameData.players) {
+                const player = gameData.players[playerId];
+                drawAvatar(player);
+            }
         }
         
         // Load and draw the world map
         function drawWorld() {
+            // Clear canvas
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
             if (worldImage.complete) {
-                // Draw the world image at actual size, starting from upper-left (0,0)
-                // This ensures the upper-left of the map aligns with world coordinates
-                ctx.drawImage(worldImage, 0, 0, worldImage.width, worldImage.height);
+                // Draw the world image with camera offset
+                ctx.drawImage(
+                    worldImage,
+                    gameData.camera.x, gameData.camera.y, canvas.width, canvas.height,
+                    0, 0, canvas.width, canvas.height
+                );
             }
+            
+            // Draw avatars on top of the world
+            drawAvatars();
         }
         
         // Initialize the game
@@ -42,6 +250,9 @@
             // Set up canvas resize handler
             window.addEventListener('resize', resizeCanvas);
             resizeCanvas();
+            
+            // Connect to game server
+            connectToServer();
         }
         
         // Start the game when page loads
