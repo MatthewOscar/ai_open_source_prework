@@ -1,0 +1,27 @@
+/* Reset default margins and padding */
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+/* Make body and html full height */
+html, body {
+    height: 100%;
+    overflow: hidden; /* Prevent scrollbars */
+}
+
+/* Canvas styling */
+#gameCanvas {
+    display: block;
+    width: 100vw;
+    height: 100vh;
+    background-color: #000; /* Black background as fallback */
+    cursor: crosshair; /* Game-like cursor */
+}
+
+/* Ensure no margins or borders on canvas */
+canvas {
+    border: none;
+    outline: none;
+}
