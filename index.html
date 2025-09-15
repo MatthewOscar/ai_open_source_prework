@@ -34,6 +34,13 @@
             'KeyD': 'right',
             'ArrowRight': 'right'
         };
+        let lastMoveTime = 0;
+        const MOVE_THROTTLE_MS = 75; // Send move commands every 75ms (about 13 per second)
+        
+        // Mouse control state
+        let isMouseDragging = false;
+        let mouseWorldX = 0;
+        let mouseWorldY = 0;
         
         // WebSocket connection
         function connectToServer() {
@@ -88,10 +95,32 @@
                     break;
                     
                 case 'players_moved':
-                    // Update player positions
+                    // Update player positions with smooth interpolation
                     for (const playerId in message.players) {
                         if (gameData.players[playerId]) {
-                            Object.assign(gameData.players[playerId], message.players[playerId]);
+                            const serverPlayer = message.players[playerId];
+                            const localPlayer = gameData.players[playerId];
+                            
+                            // Don't interpolate our own player (we use client-side prediction)
+                            if (playerId === gameData.playerId) {
+                                // Just update facing and animation state from server
+                                localPlayer.facing = serverPlayer.facing;
+                                localPlayer.isMoving = serverPlayer.isMoving;
+                                localPlayer.animationFrame = serverPlayer.animationFrame;
+                            } else {
+                                // For other players, set up smooth interpolation
+                                localPlayer.targetX = serverPlayer.x;
+                                localPlayer.targetY = serverPlayer.y;
+                                localPlayer.facing = serverPlayer.facing;
+                                localPlayer.isMoving = serverPlayer.isMoving;
+                                localPlayer.animationFrame = serverPlayer.animationFrame;
+                                
+                                // If no current interpolation, snap to position
+                                if (!localPlayer.interpolating) {
+                                    localPlayer.x = serverPlayer.x;
+                                    localPlayer.y = serverPlayer.y;
+                                }
+                            }
                         }
                     }
                     updateCamera();
@@ -125,20 +154,163 @@
                     direction: direction
                 };
                 ws.send(JSON.stringify(moveMessage));
+                
+                // Client-side prediction: move our player immediately
+                predictPlayerMovement(direction);
             }
+        }
+        
+        // Predict player movement locally for smooth feel
+        function predictPlayerMovement(direction) {
+            if (!gameData.playerId || !gameData.players[gameData.playerId]) {
+                return;
+            }
+            
+            const player = gameData.players[gameData.playerId];
+            const moveSpeed = 25; // Fast and responsive movement
+            
+            // Move player locally based on direction
+            switch(direction) {
+                case 'up':
+                    player.y = Math.max(0, player.y - moveSpeed);
+                    player.facing = 'north';
+                    break;
+                case 'down':
+                    player.y = Math.min(2048 - 32, player.y + moveSpeed); // Assuming avatar is ~32px tall
+                    player.facing = 'south';
+                    break;
+                case 'left':
+                    player.x = Math.max(0, player.x - moveSpeed);
+                    player.facing = 'west';
+                    break;
+                case 'right':
+                    player.x = Math.min(2048 - 32, player.x + moveSpeed); // Assuming avatar is ~32px wide
+                    player.facing = 'east';
+                    break;
+            }
+            
+            player.isMoving = true;
+            updateCamera();
+            drawWorld();
         }
         
         // Game loop for continuous movement
         function gameLoop() {
-            // Check for pressed movement keys and send commands
-            for (const key in keysPressed) {
-                if (keysPressed[key] && keyMapping[key]) {
-                    sendMoveCommand(keyMapping[key]);
+            const currentTime = Date.now();
+            
+            // Interpolate other players' positions for smooth movement
+            interpolatePlayerPositions();
+            
+            // Only send move commands if enough time has passed (throttling)
+            if (currentTime - lastMoveTime >= MOVE_THROTTLE_MS) {
+                let commandSent = false;
+                
+                // Priority 1: Mouse dragging (overrides keyboard)
+                if (isMouseDragging) {
+                    sendMoveToPosition(mouseWorldX, mouseWorldY);
+                    commandSent = true;
+                } else {
+                    // Priority 2: Keyboard movement (only when not dragging)
+                    for (const key in keysPressed) {
+                        if (keysPressed[key] && keyMapping[key]) {
+                            sendMoveCommand(keyMapping[key]);
+                            commandSent = true;
+                            break; // Only send one direction per throttle period
+                        }
+                    }
+                }
+                
+                if (commandSent) {
+                    lastMoveTime = currentTime;
                 }
             }
             
             // Continue the game loop
             requestAnimationFrame(gameLoop);
+        }
+        
+        // Send move-to-position command (for mouse control)
+        function sendMoveToPosition(worldX, worldY) {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                const moveMessage = {
+                    action: "move",
+                    x: worldX,
+                    y: worldY
+                };
+                ws.send(JSON.stringify(moveMessage));
+                
+                // Client-side prediction for mouse movement too
+                predictPlayerMovementToward(worldX, worldY);
+            }
+        }
+        
+        // Predict movement toward a target position
+        function predictPlayerMovementToward(targetX, targetY) {
+            if (!gameData.playerId || !gameData.players[gameData.playerId]) {
+                return;
+            }
+            
+            const player = gameData.players[gameData.playerId];
+            const dx = targetX - player.x;
+            const dy = targetY - player.y;
+            const distance = Math.sqrt(dx * dx + dy * dy);
+            
+            if (distance > 5) { // Only move if we're not already close
+                const moveSpeed = 25; // Same speed as keyboard movement
+                const moveX = (dx / distance) * moveSpeed;
+                const moveY = (dy / distance) * moveSpeed;
+                
+                player.x += moveX;
+                player.y += moveY;
+                
+                // Set facing direction based on movement
+                if (Math.abs(dx) > Math.abs(dy)) {
+                    player.facing = dx > 0 ? 'east' : 'west';
+                } else {
+                    player.facing = dy > 0 ? 'south' : 'north';
+                }
+                
+                player.isMoving = true;
+                updateCamera();
+                drawWorld();
+            }
+        }
+        
+        // Smooth interpolation for other players
+        function interpolatePlayerPositions() {
+            let needsRedraw = false;
+            
+            for (const playerId in gameData.players) {
+                if (playerId === gameData.playerId) continue; // Skip our own player
+                
+                const player = gameData.players[playerId];
+                if (player.targetX !== undefined && player.targetY !== undefined) {
+                    const dx = player.targetX - player.x;
+                    const dy = player.targetY - player.y;
+                    const distance = Math.sqrt(dx * dx + dy * dy);
+                    
+                    if (distance > 1) {
+                        // Move towards target at a fixed speed
+                        const speed = 3; // Adjust for smoothness
+                        const moveX = (dx / distance) * speed;
+                        const moveY = (dy / distance) * speed;
+                        
+                        player.x += moveX;
+                        player.y += moveY;
+                        player.interpolating = true;
+                        needsRedraw = true;
+                    } else {
+                        // Close enough, snap to target
+                        player.x = player.targetX;
+                        player.y = player.targetY;
+                        player.interpolating = false;
+                    }
+                }
+            }
+            
+            if (needsRedraw) {
+                drawWorld();
+            }
         }
         
         // Load avatar images from base64 data
@@ -278,6 +450,32 @@
             
             // Draw avatars on top of the world
             drawAvatars();
+            
+            // Draw mouse target if dragging
+            if (isMouseDragging) {
+                drawMouseTarget();
+            }
+        }
+        
+        // Draw visual indicator for mouse target
+        function drawMouseTarget() {
+            const screenX = mouseWorldX - gameData.camera.x;
+            const screenY = mouseWorldY - gameData.camera.y;
+            
+            // Only draw if target is visible on screen
+            if (screenX >= 0 && screenX <= canvas.width && screenY >= 0 && screenY <= canvas.height) {
+                ctx.save();
+                ctx.strokeStyle = '#00ff00';
+                ctx.lineWidth = 2;
+                ctx.setLineDash([5, 5]);
+                
+                // Draw a circle at the target position
+                ctx.beginPath();
+                ctx.arc(screenX, screenY, 10, 0, 2 * Math.PI);
+                ctx.stroke();
+                
+                ctx.restore();
+            }
         }
         
         // Keyboard event handlers
@@ -304,6 +502,44 @@
             });
         }
         
+        // Mouse control setup
+        function setupMouseControls() {
+            canvas.addEventListener('mousedown', function(event) {
+                isMouseDragging = true;
+                updateMouseWorldPosition(event);
+            });
+            
+            canvas.addEventListener('mousemove', function(event) {
+                if (isMouseDragging) {
+                    updateMouseWorldPosition(event);
+                }
+            });
+            
+            canvas.addEventListener('mouseup', function() {
+                isMouseDragging = false;
+            });
+            
+            // Handle mouse leaving canvas
+            canvas.addEventListener('mouseleave', function() {
+                isMouseDragging = false;
+            });
+        }
+        
+        // Convert screen coordinates to world coordinates
+        function updateMouseWorldPosition(event) {
+            const rect = canvas.getBoundingClientRect();
+            const screenX = event.clientX - rect.left;
+            const screenY = event.clientY - rect.top;
+            
+            // Convert to world coordinates
+            mouseWorldX = screenX + gameData.camera.x;
+            mouseWorldY = screenY + gameData.camera.y;
+            
+            // Clamp to world boundaries
+            mouseWorldX = Math.max(0, Math.min(2048, mouseWorldX));
+            mouseWorldY = Math.max(0, Math.min(2048, mouseWorldY));
+        }
+        
         // Initialize the game
         function init() {
             // Load the world image
@@ -318,6 +554,9 @@
             
             // Set up keyboard controls
             setupKeyboardControls();
+            
+            // Set up mouse controls
+            setupMouseControls();
             
             // Start the game loop
             gameLoop();
