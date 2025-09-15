@@ -81,6 +81,7 @@
                         gameData.avatars = message.avatars;
                         loadAvatarImages();
                         updateCamera();
+                        drawWorld();
                     } else {
                         console.error('Failed to join game:', message.error);
                     }
@@ -110,6 +111,9 @@
                     delete gameData.players[message.playerId];
                     drawWorld();
                     break;
+                    
+                default:
+                    console.log('Unknown message type:', message.action, message);
             }
         }
         
